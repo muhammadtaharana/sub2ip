@@ -2,7 +2,7 @@
 
 # Check for input file
 if [ -z "$1" ]; then
-    echo "Usage: ./lookup.sh <input_file.txt> [output_file.txt]"
+    echo "Usage: ./sub2ip.sh <input_file.txt> [output_file.txt]"
     exit 1
 fi
 
