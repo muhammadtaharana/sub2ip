@@ -1,7 +1,7 @@
 ## sub2ip
 
 <p align="center">
-<img width="1024" height="761" alt="image" src="https://github.com/user-attachments/assets/e149af0a-6811-425f-9906-803fc704ccdd" />
+<img width="1024" height="500" alt="image" src="https://github.com/user-attachments/assets/e149af0a-6811-425f-9906-803fc704ccdd" />
 </p>
 
 > [!NOTE]
