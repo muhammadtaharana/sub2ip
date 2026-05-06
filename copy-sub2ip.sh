@@ -48,13 +48,24 @@ show_usage() {
     echo "    -h, --help              Display this help message"
     echo ""
     echo -e "${YELLOW}Examples:${NC}"
+    echo "    # Resolve to screen with 4 threads"
     echo "    sub2ip.sh subdomains.txt"
+    echo ""
+    echo "    # Save IPs to file with 8 threads"
     echo "    sub2ip.sh subdomains.txt -o resolved_ips.txt -t 8"
+    echo ""
+    echo "    # Query AAAA records (IPv6) with Google DNS"
     echo "    sub2ip.sh subdomains.txt -r AAAA -s 8.8.8.8"
+    echo ""
+    echo "    # Query CNAME records and save to file"
     echo "    sub2ip.sh subdomains.txt -r CNAME -o cnames.txt"
+    echo ""
+    echo "    # Verbose output with custom DNS server"
+    echo "    sub2ip.sh subdomains.txt -s 1.1.1.1 -v"
 }
 
-# Parse arguments with full validation (Bug #14 fixed)
+# Parse arguments
+# Parse arguments
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -109,7 +120,7 @@ parse_args() {
     done
 }
 
-# Validate input (Bug #12 fixed - removed confusing xargs check)
+# Validate input
 validate_input() {
     if [ -z "$INPUT_FILE" ]; then
         echo -e "${RED}Error: Input file is required${NC}"
@@ -136,7 +147,7 @@ validate_input() {
     fi
 }
 
-# Validate DNS server (Bug #1, #5, #14 fixed)
+# Validate DNS server
 validate_resolver() {
     if [ -z "$RESOLVER" ]; then
         return 0
@@ -150,7 +161,7 @@ validate_resolver() {
     fi
 }
 
-# Detect best DNS tool available (Bug #2, #5 fixed - no Windows tools for Kali)
+# Detect best DNS tool available
 detect_dns_tool() {
     if command -v dig &> /dev/null; then
         echo "dig"
@@ -161,7 +172,7 @@ detect_dns_tool() {
     fi
 }
 
-# Query DNS using dig or host (Bug #1, #5, #10 fixed)
+# Query DNS using dig or host
 query_dns() {
     local subdomain="$1"
     local tool="$2"
@@ -193,111 +204,84 @@ query_dns() {
     fi
 }
 
-# Filter results with proper regex (Bug #4, #7, #8 fixed)
+# Filter results based on record type and DNS tool
 filter_results() {
     local output="$1"
     local type="$2"
     local tool="$3"
-
-    if [ -z "$output" ]; then
-        return
-    fi
-
+    
     case "$tool" in
-        dig)
-            # dig +short already returns clean output
-            case "$type" in
-                A)
-                    # Extract valid IPv4 (0-255 per octet) - Bug #7 fixed with proper validation
-                    echo "$output" | grep -oE '\b((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b' | head -1
-                    ;;
-                AAAA)
-                    # Extract IPv6 (handles uppercase, lowercase, compressed) - Bug #4 fixed
-                    echo "$output" | grep -oE '(([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}|::1|::)' | head -1
-                    ;;
-                *)
-                    # For other record types, return first non-empty line
-                    echo "$output" | grep -v '^$' | head -1
-                    ;;
-            esac
-            ;;
         host)
+            # Filter for host command output
             case "$type" in
                 A)
-                    # Filter A records: "example.com has address XXX.XXX.XXX.XXX"
-                    echo "$output" | grep "has address" | awk '{print $NF}' | grep -oE '\b((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b' | head -1
+                    echo "$output" | grep "has address" | awk '{print $NF}'
                     ;;
                 AAAA)
-                    # Filter AAAA records: "example.com has IPv6 address XXX"
-                    echo "$output" | grep "has IPv6 address" | awk '{print $NF}' | head -1
+                    echo "$output" | grep "has IPv6 address" | awk '{print $NF}'
                     ;;
                 CNAME)
-                    # Filter CNAME: "example.com is an alias for target.com."
                     echo "$output" | grep "is an alias for" | awk '{print $NF}' | sed 's/\.$//'
                     ;;
                 MX)
-                    # Filter MX: "example.com mail is handled by 10 mail.example.com."
                     echo "$output" | grep "mail is handled by" | awk '{print $NF}' | sed 's/\.$//'
                     ;;
                 NS)
-                    # Filter NS: "example.com nameserver XXX."
                     echo "$output" | grep "nameserver" | awk '{print $NF}' | sed 's/\.$//'
                     ;;
                 TXT)
-                    # Filter TXT records
                     echo "$output" | grep "descriptive text" | cut -d'"' -f2
                     ;;
                 SOA)
-                    # Return SOA record as-is
-                    echo "$output" | grep "start of authority" | head -1
+                    echo "$output" | grep "start of authority"
                     ;;
                 ANY)
-                    # Return all non-empty lines
-                    echo "$output" | grep -v '^$'
+                    echo "$output"
                     ;;
             esac
+            ;;
+        nslookup)
+            # Filter for nslookup output
+            case "$type" in
+                A)
+                    # Extract IPv4 - start after "Name:" line and get first IP
+                    echo "$output" | awk '/^Name:/{p=1} p' | grep -oE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' | head -1
+                    ;;
+                AAAA)
+                    # Extract IPv6 addresses after Name line
+                    echo "$output" | awk '/^Name:/{p=1} p' | grep -oE '([0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}' | head -1
+                    ;;
+                *)
+                    echo "$output" | grep -E "(CNAME|MX|NS|TXT)" | head -1
+                    ;;
+            esac
+            ;;
+        powershell)
+            # Filter for PowerShell Resolve-DnsName output
+            case "$type" in
+                A)
+                    echo "$output" | grep -i "ipaddress" | awk '{print $NF}'
+                    ;;
+                *)
+                    echo "$output" | grep -i "$type" | head -1
+                    ;;
+            esac
+            ;;
+        *)
+            echo "$output"
             ;;
     esac
 }
 
-# Thread-safe file writing (Bug #11 fixed - added flock support)
-write_result() {
-    local result="$1"
-    local output_file="$2"
-
-    if [ -z "$result" ]; then
-        return
-    fi
-
-    if [ -n "$output_file" ]; then
-        # Use flock if available for thread safety
-        if command -v flock &> /dev/null; then
-            (
-                flock -x 200
-                echo "$result" >> "$output_file"
-            ) 200>"$LOCK_FILE"
-        else
-            echo "$result" >> "$output_file"
-        fi
-    else
-        echo -e "$result"
-    fi
-}
-
-# Process individual subdomain (Bug #6, #15, #16, #18 fixed)
+# Process individual subdomain
 process_subdomain() {
     local subdomain="$1"
     local output_file="$2"
     local dns_tool="$3"
     local record_type="$4"
 
-    # Strip CRLF and whitespace (Bug #18 improved - handles Windows line endings)
-    subdomain="${subdomain%%$'\r'}"
-    subdomain="${subdomain%%$'\n'}"
-    subdomain="$(echo "$subdomain" | xargs)"
-    
     # Skip empty lines
-    if [ -z "$subdomain" ]; then
+    if [ -z "$subdomain" ] || [[ "$subdomain" =~ ^[[:space:]]*$ ]]; then
         return
     fi
 
@@ -322,20 +306,25 @@ process_subdomain() {
 export -f query_dns filter_results process_subdomain write_result
 export RECORD_TYPE RESOLVER VERBOSE LOCK_FILE
 
-# Main execution (Bug #2, #3, #6, #16, #17 fixed)
+# Main execution
 main() {
     parse_args "$@"
     validate_input
     validate_resolver
 
+    # Detect DNS tool
     DNS_TOOL=$(detect_dns_tool)
-
+    
     if [ "$DNS_TOOL" = "none" ]; then
         echo -e "${RED}Error: No DNS lookup tool found${NC}"
+        echo "Please install one of the following:"
+        echo "  - host (dnsutils on Linux, bind on macOS)"
+        echo "  - nslookup (built-in on Windows/macOS)"
+        echo "  - PowerShell (built-in on Windows)"
         exit 1
     fi
 
-    # Clear output file
+    # Clear output file if it exists
     if [ -n "$OUTPUT_FILE" ]; then
         > "$OUTPUT_FILE"
     fi
@@ -353,22 +342,17 @@ main() {
     if command -v parallel &> /dev/null; then
         cat "$INPUT_FILE" | parallel -j "$THREADS" process_subdomain {} "$OUTPUT_FILE" "$DNS_TOOL" "$RECORD_TYPE"
     else
-        # Use background jobs for systems without GNU Parallel (Bug #3 fixed - no wait -n)
+        # Use background jobs for systems without GNU Parallel
         local counter=0
         while IFS= read -r subdomain || [ -n "$subdomain" ]; do
-            # Strip CRLF and whitespace for Windows compatibility
-            subdomain="${subdomain%%$'\r'}"
-            subdomain="${subdomain%%$'\n'}"
-            subdomain="$(echo "$subdomain" | xargs)"
-            
-            # Skip empty lines
-            [[ -z "$subdomain" ]] && continue
+            # Skip empty/whitespace lines
+            [[ -z "$subdomain" || "$subdomain" =~ ^[[:space:]]*$ ]] && continue
 
             if [ $VERBOSE -eq 1 ]; then
                 echo -e "${YELLOW}[*] Querying: $subdomain${NC}" >&2
             fi
 
-            # Process in background (Bug #6, #9, #13, #16 fixed)
+            # Process in background
             (
                 output=$(query_dns "$subdomain" "$DNS_TOOL")
                 if [ -n "$output" ]; then
@@ -383,7 +367,7 @@ main() {
                 fi
             ) &
 
-            # Thread management without wait -n (compatible with bash <5.1) - Bug #3 fixed
+            # Thread management without wait -n (compatible with bash <5.1)
             counter=$((counter + 1))
             if [ $counter -ge "$THREADS" ]; then
                 wait  # Wait for any background job
