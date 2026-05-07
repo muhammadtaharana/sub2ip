@@ -1,10 +1,193 @@
-# CHANGELOG
-
-All notable changes to the **sub2ip** project are documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
+# CHANGELOG — sub2ip
+ 
+All notable changes to this project are documented in this file.
+Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+ 
+---
+ 
+## [3.0.0] — 2026-05-07  *(Ultra-Advanced Rewrite)*
+ 
+### 💥 Critical Bug Fixes
+ 
+These were hard defects in v2.1 that caused incorrect behaviour or outright
+crashes under normal usage conditions.
+ 
+#### BUG-01 — `write_result()` was never defined
+- **Severity:** Critical (script crashes on every resolved subdomain)
+- **Root Cause:** The function was called in `process_subdomain()` and even
+  passed to `export -f`, but no definition existed anywhere in the file.
+- **Fix:** Defined `write_result()` with proper `flock`-based atomic file
+  writes. Falls back to sequential `echo` appends when `flock` is unavailable,
+  matching POSIX write-atomicity guarantees for small writes.
+ 
+#### BUG-02 — `export -f` referenced `write_result` before it was defined
+- **Severity:** Critical (GNU Parallel workers fail to start with
+  `bash: write_result: not a function`)
+- **Root Cause:** The `export -f write_result` line appeared at the top-level
+  of the script, before the function body it referred to existed.
+- **Fix:** All `export -f` and `export` variable statements moved inside
+  `run_with_parallel()`, which is only called at runtime, well after every
+  function definition has been evaluated.
+ 
+#### BUG-03 — Dead code branches for `nslookup` / `powershell` in `filter_results()`
+- **Severity:** High (code maintenance trap; functions promised but not
+  delivered, silently producing empty output if a code path ever reached them)
+- **Root Cause:** `detect_dns_tool()` only ever returned `"dig"`, `"host"`, or
+  `"none"` — it never returned `"nslookup"` or `"powershell"`. The
+  corresponding `case` branches in `filter_results()` were therefore
+  unreachable dead code.
+- **Fix:** Dead branches removed entirely. `filter_results()` now handles only
+  `dig` and `host`, each with a clean `case` sub-block per record type.
+ 
+#### BUG-04 — ANSI colour codes leaked into output files
+- **Severity:** High (output files were unparseable by downstream tools —
+  `grep`, `cut`, `sort`, etc. — due to embedded escape sequences)
+- **Root Cause:** `write_result()` (even when later defined) was given
+  colour-formatted strings with embedded `\033[…m` codes, which were written
+  verbatim to the file.
+- **Fix:** File writes always receive plain strings. Colour formatting is
+  applied exclusively on the stdout path. A `strip_ansi()` helper (portable
+  `sed` one-liner) is available for any future internal use.
+ 
+#### BUG-05 — Background-job "semaphore" was a batch gate, not a concurrency limiter
+- **Severity:** High (concurrency semantics were broken; the script processed
+  jobs in batches of exactly `THREADS`, with all workers idle while waiting for
+  the slowest job in the batch before starting the next batch)
+- **Root Cause:** The counter logic reset to `0` after `THREADS` iterations and
+  called `wait` (blocking on *all* background jobs), not just the next one to
+  finish.
+- **Fix:** Replaced with a proper `mkfifo` + fd-3 token semaphore. `THREADS`
+  tokens are pre-seeded; each worker consumes one token on start and releases
+  it on exit. This gives true `THREADS`-way parallelism with no idle gaps.
+ 
+#### BUG-06 — `LOCK_FILE` created but `flock` never called
+- **Severity:** High (concurrent writes to the output file from multiple
+  background jobs could interleave, corrupting result lines)
+- **Root Cause:** `LOCK_FILE` was declared and `touch`-ed, but the actual
+  `flock` system call was never issued anywhere in the script.
+- **Fix:** Every `write_result()` invocation now wraps the file write in
+  `( flock -x 9; … ) 9>"$LOCK_FILE"` when `flock` is available.
+ 
+#### BUG-07 — No timeout on DNS queries
+- **Severity:** Medium (a single unresponsive resolver could stall an entire
+  worker thread indefinitely, hanging the scan)
+- **Root Cause:** Neither `dig` nor `host` were invoked with any timeout flag.
+- **Fix:** Added `--timeout SECS` flag (default: 5). Passed as `+time=N
+  +tries=1` to `dig` and `-W N` to `host`. The extra `+tries=1` prevents
+  `dig` from doing its own internal retry loop on top of the script's logic.
+ 
+#### BUG-08 — No deduplication of DNS answers
+- **Severity:** Medium (multi-answer records, e.g. round-robin A records,
+  produced duplicate lines in output)
+- **Root Cause:** Each line of `dig +short` output was written as-is.
+- **Fix:** A per-invocation `seen_values` associative array deduplicates
+  values before writing. Distinct values (e.g. `1.2.3.4` and `5.6.7.8` for
+  the same host) are both preserved.
+ 
+#### BUG-09 — No retry logic on transient DNS failures
+- **Severity:** Medium (transient network blips caused permanent false
+  negatives with no recourse)
+- **Root Cause:** A single failed `dig`/`host` call was immediately recorded
+  as unresolvable.
+- **Fix:** Added `--retries N` flag (default: 2) with exponential backoff
+  (`attempt²` seconds: 1s after attempt 1, 4s after attempt 2). The
+  `query_dns()` wrapper owns all retry logic; `query_single()` remains a
+  pure, stateless DNS call.
+ 
+#### BUG-10 — No input sanitisation
+- **Severity:** Medium (comment lines, BOM characters, Windows CR (`\r`),
+  leading/trailing whitespace, and syntactically invalid hostnames were passed
+  directly to DNS tools, producing confusing errors or garbage results)
+- **Root Cause:** The input file was consumed with a raw `while read` loop
+  without any pre-processing.
+- **Fix:** `clean_line()` strips BOM, CR, whitespace, and skips `#`-prefixed
+  comment lines. A regex guard rejects lines that cannot be valid subdomains.
+  Invalid lines increment the `skipped` counter and are reported in the
+  summary.
+ 
+#### BUG-11 — Zero statistics tracking
+- **Severity:** Low-Medium (operators had no visibility into how many
+  subdomains resolved, failed, or were skipped)
+- **Root Cause:** No counters existed.
+- **Fix:** Three atomic counter files (`resolved`, `failed`, `skipped`) live
+  in the per-run `TMP_DIR`. Each is incremented by appending a token line
+  (protected by `flock` when available). `count_stat()` uses `wc -l` to read
+  totals. A formatted summary table is printed at completion.
+ 
+#### BUG-12 — No wildcard DNS detection
+- **Severity:** Low-Medium (wildcard zones resolve every subdomain, making
+  results meaningless without a warning)
+- **Root Cause:** Not implemented in v2.1.
+- **Fix:** `wildcard_check_domains()` fires a single random probe per apex
+  domain before scanning begins. A warning is emitted for any domain that
+  resolves the random subdomain. Opt-out via `--no-wildcard`.
+ 
+#### BUG-13 — Only one hardcoded output format
+- **Severity:** Low (no machine-readable output; downstream automation
+  required brittle parsing of colourised plain text)
+- **Root Cause:** Not implemented in v2.1.
+- **Fix:** `--format plain|csv|json` flag added. `plain` preserves the
+  original human-readable style (colour on stdout, `subdomain|value` in
+  files). `csv` emits RFC-4180-compliant rows with a header. `json` emits
+  timestamped JSON-Lines (one object per resolved value), suitable for
+  ingestion by SIEM/logging pipelines.
+ 
+#### BUG-14 — Resolver validation regex rejected valid IPv6 and hostname resolvers
+- **Severity:** Low (users could not specify IPv6 resolvers like `2001:4860::8888`
+  or hostname-based resolvers like `resolver.example.com`)
+- **Root Cause:** The validation regex was anchored strictly to
+  `^[0-9]{1,3}\.[0-9]{1,3}…$`, matching only bare IPv4.
+- **Fix:** Updated to accept IPv4 (with per-octet range check ≤255), bare or
+  bracketed IPv6, and RFC-compliant FQDNs. Each format is tested with its own
+  pattern before the main validation fails.
+ 
+---
+ 
+### ✨ New Features (v3.0)
+ 
+| Feature | Flag | Description |
+|---------|------|-------------|
+| Retry with backoff | `--retries N` | Retry failed queries up to N times (exp. backoff) |
+| Per-query timeout | `--timeout SECS` | Hard timeout per DNS call (default: 5s) |
+| Rate limiting | `--rate-limit MS` | Delay per thread between queries (ms) |
+| Output formats | `--format plain\|csv\|json` | Machine-readable output options |
+| Wildcard detection | `--no-wildcard` | Pre-scan apex domains for wildcard DNS |
+| Thread cap raised | `--threads 1-64` | Raised from 16 to 64 (fd-semaphore engine) |
+| Result deduplication | *(automatic)* | Deduplicates multi-answer DNS responses |
+| Completion summary | *(automatic)* | Resolved / Failed / Skipped counts + elapsed time |
+| Input sanitisation | *(automatic)* | Strips BOM, CR, whitespace, comments, bad hostnames |
+| IPv6 resolver support | `-s 2001:4860::8888` | Resolvers can now be IPv6 or FQDN |
+| File header | *(automatic)* | Metadata header written to output files |
+| `--no-color` flag | `--no-color` | Disables all ANSI codes (for CI / log capture) |
+ 
+---
+ 
+### 🔧 Internal / Structural Changes
+ 
+- **Shebang** changed from `#!/bin/bash` to `#!/usr/bin/env bash` for
+  portability across distributions where `bash` is not at `/bin/bash`.
+- **`set -euo pipefail`** — `nounset` (`-u`) added; all variable references
+  audited to use `${var:-}` default-expansion where empty is legitimate.
+- **`IFS=$'\n\t'`** set globally to prevent word-splitting surprises in loops.
+- **`TMP_DIR`** — All per-run temp files now live under a single `mktemp -d`
+  directory, eliminating collisions between concurrent `sub2ip` instances.
+  `trap cleanup EXIT` removes the directory atomically on any exit path.
+- **`START_TIME=$SECONDS`** — elapsed time computed without `date` arithmetic,
+  works on systems where `date` does not support nanoseconds.
+- **Signal handling** — `INT` / `TERM` now print a clean "Interrupted" message
+  and exit with code 130 (the POSIX convention for SIGINT termination).
+- **`log_*` family** — Unified logging helpers (`log_verbose`, `log_warn`,
+  `log_error`, `log_info`, `log_ok`) replace ad-hoc `echo -e` calls. Verbose
+  output is sent exclusively to `stderr`; result data goes only to `stdout` or
+  the output file.
+- **`detect_dns_tool()`** — Kept as a pure function; result cached in
+  `DNS_TOOL` global set once in `validate_tools()` and exported.
+- **`query_single()` / `query_dns()`** — Split into stateless query layer and
+  stateful retry layer for testability.
+- **`process_subdomain()`** — Now has a single responsibility: sanitise →
+  query → filter → deduplicate → format → write. Stat tracking is fully
+  encapsulated inside.
+ 
 ---
 
 ## [2.1.0] - 2026-05-06

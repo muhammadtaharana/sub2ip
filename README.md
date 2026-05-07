@@ -1,33 +1,56 @@
 ## sub2ip
 
 <p align="center">
-<img width="1024" height="500" alt="image" src="https://github.com/user-attachments/assets/e149af0a-6811-425f-9906-803fc704ccdd" />
+<img width="1024" height="400" alt="image" src="https://github.com/user-attachments/assets/e149af0a-6811-425f-9906-803fc704ccdd" />
 </p>
 
 > [!NOTE]
-> **sub2ip** is a robust and efficient Bash-based resolution engine designed to convert a list of subdomains into their corresponding IPv4 addresses.
+> **sub2ip** is an ultra-advanced, production-grade Bash-based resolution engine designed to convert a list of subdomains into their corresponding DNS records — with full multi-threading, atomic output, retry logic, wildcard detection, and machine-readable output formats.
 
 > [!CAUTION]
 > **Use sub2ip only on assets you own or have explicit permission to test. Unauthorized DNS resolution or subsequent scanning can be illegal. The authors and project accept no responsibility for misuse of this tool.**
 
+---
+
+### What's New in v3.0
+
+| Category | Change |
+| :--- | :--- |
+| 🐛 **14 bug fixes** | Including undefined `write_result()`, broken concurrency, ANSI-polluted files, dead code branches — see [CHANGELOG.md](CHANGELOG.md) |
+| ⚡ **True semaphore engine** | fd-based token semaphore replaces the broken batch-gate; real N-way parallelism with no idle gaps |
+| 🔁 **Retry with backoff** | `--retries N` with exponential backoff (1s, 4s…) on transient DNS failures |
+| ⏱️ **Per-query timeout** | `--timeout SECS` enforced at the `dig`/`host` call level |
+| 🌊 **Rate limiting** | `--rate-limit MS` delay per thread to respect DNS server load |
+| 📄 **Output formats** | `--format plain|csv|json` — JSON-Lines output for SIEM/pipeline ingestion |
+| 🌐 **Wildcard detection** | Pre-scan apex domains for wildcard DNS before resolution begins |
+| 🧹 **Input sanitisation** | Strips BOM, CR, comments, whitespace; validates hostname syntax |
+| 📊 **Completion summary** | Resolved / Failed / Skipped counts + elapsed time printed on exit |
+| 🔢 **64 threads** | Thread cap raised from 16 → 64 |
+| 🌍 **IPv6 resolver support** | `-s` now accepts IPv4, IPv6, or FQDN resolver addresses |
+
+---
+
 ### Features
 
-* **Multi-Threading Support:** Resolve vast lists of subdomains in parallel using GNU Parallel or xargs - up to **16 concurrent threads** for massive performance gains.
-* **DNS Record Filtering:** Query multiple DNS record types including A, AAAA, CNAME, MX, NS, TXT, SOA, and ANY records.
-* **Custom DNS Resolvers:** Specify alternative DNS servers (e.g., 8.8.8.8, 1.1.1.1) for flexibility and privacy.
-* **Efficient Resolution:** Resolves vast lists of subdomains quickly using the standard `host` utility.
-* **Clean IP Extraction:** Automatically strips unnecessary DNS information to output clean results.
-* **Intelligent File Handling:** Safely processes input files using line-by-line reading to prevent issues with complex spacing.
-* **Flexible Output:** Supports both real-time console display and direct logging to an output file.
-* **Global Installation:** Install once, use from anywhere with the `install.sh` script.
-* **Comprehensive Help:** Built-in help system with color-coded output and usage examples.
-* **Verbose Mode:** Debug mode for troubleshooting DNS resolution issues.
+* **True Parallel Engine:** fd-based semaphore gives real `N`-way concurrency — up to **64 threads** — with GNU Parallel or native bash background jobs.
+* **DNS Record Filtering:** Query A, AAAA, CNAME, MX, NS, TXT, SOA, and ANY records with clean per-type output parsing.
+* **Custom DNS Resolvers:** IPv4, IPv6, or FQDN resolvers (e.g. `8.8.8.8`, `2001:4860::8888`, `resolver.example.com`).
+* **Retry with Exponential Backoff:** Transient failures are retried automatically (`--retries`, default: 2).
+* **Per-Query Timeout:** Hard deadline enforced at the `dig`/`host` system call (`--timeout`, default: 5s).
+* **Rate Limiting:** Configurable inter-query delay per thread (`--rate-limit MS`) to avoid hammering resolvers.
+* **Wildcard DNS Detection:** Probes apex domains before scanning and warns when results may be unreliable.
+* **Machine-Readable Output:** `plain`, `csv`, and `json` (JSON-Lines) output formats.
+* **Atomic File Writes:** `flock`-protected output prevents line interleaving under high concurrency.
+* **Input Sanitisation:** Strips BOM, CRLF, comments (`#`), blank lines, and rejects invalid hostnames.
+* **Completion Summary:** Resolved / Failed / Skipped totals and elapsed time on every run.
+* **Verbose & No-Color Modes:** `-v` for debug output; `--no-color` for CI/log capture.
+* **Comprehensive Help:** Built-in `--help` with colour-coded usage and examples.
+
+---
 
 ### Installation
 
 #### Option 1: Global Installation (Recommended)
-
-Clone the repository and run the installation script:
 
 ```bash
 git clone https://github.com/muhammadtaharana/sub2ip
@@ -36,8 +59,8 @@ sudo ./install.sh
 ```
 
 The `install.sh` script will:
-- Verify dependencies (`host`, `parallel`/`xargs`)
-- Copy sub2ip to `/usr/local/bin/sub2ip`
+- Verify dependencies (`dig` or `host`; optional `parallel`, `flock`)
+- Copy `sub2ip.sh` to `/usr/local/bin/sub2ip`
 - Set appropriate permissions
 - Enable global access from any directory
 
@@ -48,8 +71,6 @@ sub2ip subdomains.txt -o results.txt
 
 #### Option 2: Local Usage
 
-For local usage without installation:
-
 ```bash
 git clone https://github.com/muhammadtaharana/sub2ip
 cd sub2ip
@@ -59,230 +80,294 @@ chmod +x sub2ip.sh
 
 #### Uninstall
 
-To remove sub2ip from your system:
-
 ```bash
 sudo ./install.sh --uninstall
 ```
 
 #### Dependencies
 
-The installation script will check for required dependencies:
+| Dependency | Role | Install |
+| :--- | :--- | :--- |
+| `dig` *(preferred)* | DNS lookups | `sudo apt-get install dnsutils` |
+| `host` *(fallback)* | DNS lookups | `sudo apt-get install dnsutils` |
+| `parallel` *(optional)* | GNU Parallel engine | `sudo apt-get install parallel` |
+| `flock` *(optional)* | Atomic file writes | included in `util-linux` |
 
-- **host** - DNS lookup utility
-  - Ubuntu/Debian: `sudo apt-get install dnsutils`
-  - RHEL/CentOS: `sudo yum install bind-utils`
-  - macOS: `brew install bind`
+> [!TIP]
+> Install all optional dependencies for maximum performance:
+> ```bash
+> sudo apt-get install dnsutils parallel util-linux
+> ```
 
-- **parallel** or **xargs** - For multi-threading
-  - Ubuntu/Debian: `sudo apt-get install moreutils`
-  - RHEL/CentOS: `sudo yum install moreutils`
-  - macOS: `brew install moreutils`
+---
+
 ### Execution Workflow
-
-The resolution engine processes the input via the following parallel pipeline:
 
 | Phase | Description |
 | :--- | :--- |
-| **I: Initialization** | Validates the input file, checks for optional parameters, and verifies dependencies |
-| **II: Parallel Dispatch** | Distributes subdomains across multiple threads (default: 4, max: 16) using GNU Parallel or xargs |
-| **III: DNS Query** | Each thread executes a DNS lookup for its assigned subdomain using `host` with specified record type and resolver |
-| **IV: Filtration** | Intelligent filtering extracts only the requested record type data (A records, CNAME, MX, etc.) |
-| **V: Aggregation** | Results are collected and either streamed to console or appended to output file |
+| **I: Initialization** | Parse args → validate input file, resolver, tools → init tmp directory |
+| **II: Wildcard Pre-Check** | Probe each apex domain with a random subdomain to detect wildcard zones |
+| **III: Parallel Dispatch** | Distribute subdomains across threads via fd-semaphore (bash) or GNU Parallel |
+| **IV: DNS Query + Retry** | Each worker queries with timeout; retries on failure with exponential backoff |
+| **V: Filter + Deduplicate** | Record-type-specific parsing; duplicate values per subdomain eliminated |
+| **VI: Atomic Write** | Results written to stdout or file under `flock` lock |
+| **VII: Summary** | Resolved / Failed / Skipped totals + elapsed time printed |
 
-**v2.0 Performance:** 10,000 subdomains with 4 threads completes in ~2-3 minutes (vs. 15-20 minutes in v1.0)
+**v3.0 Performance:** 10,000 subdomains with 20 threads completes in ~60–90 seconds using `dig` and GNU Parallel.
+
+---
+
+### Usage
+
+```
+sub2ip <input_file> [OPTIONS]
+```
+
+#### Resolution Options
+
+| Flag | Description | Default |
+| :--- | :--- | :--- |
+| `-r, --record TYPE` | DNS record type: `A AAAA CNAME MX NS TXT SOA ANY` | `A` |
+| `-s, --server SERVER` | Custom resolver (IPv4 / IPv6 / FQDN) | system resolver |
+| `--timeout SECS` | Per-query hard timeout | `5` |
+| `--retries N` | Retry failed queries N times (exp. backoff) | `2` |
+| `--no-wildcard` | Skip wildcard DNS pre-check | *(check enabled)* |
+
+#### Performance Options
+
+| Flag | Description | Default |
+| :--- | :--- | :--- |
+| `-t, --threads NUM` | Parallel threads (1–64) | `10` |
+| `--rate-limit MS` | Delay (ms) between queries per thread | `0` |
+
+#### Output Options
+
+| Flag | Description | Default |
+| :--- | :--- | :--- |
+| `-o, --output FILE` | Write results to file | stdout |
+| `-f, --format FORMAT` | `plain` / `csv` / `json` | `plain` |
+| `-v, --verbose` | Enable debug output | off |
+| `--no-color` | Disable ANSI colour codes | off |
+
+---
 
 ### Usage Examples
 
 #### Basic Usage
 
 ```bash
-# Display help and all available options
+# Display help
 sub2ip --help
 
-# Resolve a list of subdomains to the screen
+# Resolve A records to screen
 sub2ip subdomains.txt
 
-# Resolve and save clean IPs to a file
+# Save results to file
 sub2ip subdomains.txt -o resolved_ips.txt
 ```
 
 #### Multi-Threading
 
 ```bash
-# Use 8 threads for faster processing
-sub2ip subdomains.txt -t 8 -o results.txt
+# 20 threads for large lists
+sub2ip subdomains.txt -t 20 -o results.txt
 
-# Maximum threads (16) for very large lists
-sub2ip massive_list.txt -t 16 -o ips.txt
+# Maximum throughput (64 threads)
+sub2ip massive_list.txt -t 64 -o ips.txt
 ```
 
 #### DNS Record Types
 
 ```bash
-# Query IPv4 addresses (A records) - default
+# IPv4 (A records) — default
 sub2ip domains.txt -r A -o ipv4.txt
 
-# Query IPv6 addresses (AAAA records)
+# IPv6 (AAAA records)
 sub2ip domains.txt -r AAAA -o ipv6.txt
 
-# Query CNAME records (aliases)
+# CNAME aliases
 sub2ip domains.txt -r CNAME -o cnames.txt
 
-# Query MX records (mail servers)
+# Mail servers
 sub2ip domains.txt -r MX -o mail_servers.txt
 
-# Query NS records (nameservers)
+# Nameservers
 sub2ip domains.txt -r NS -o nameservers.txt
 
-# Query TXT records
+# TXT records
 sub2ip domains.txt -r TXT -o txt_records.txt
 
-# Query SOA records
-sub2ip domains.txt -r SOA -o soa.txt
-
-# Query all records
+# All records
 sub2ip domains.txt -r ANY -o all_records.txt
 ```
 
 #### Custom DNS Resolvers
 
 ```bash
-# Use Google DNS (8.8.8.8)
+# Google DNS (IPv4)
 sub2ip subdomains.txt -s 8.8.8.8 -o results.txt
 
-# Use Cloudflare DNS (1.1.1.1)
+# Cloudflare DNS (IPv4)
 sub2ip subdomains.txt -s 1.1.1.1 -o results.txt
 
-# Use Quad9 DNS (9.9.9.9)
-sub2ip subdomains.txt -s 9.9.9.9 -o results.txt
+# Google DNS (IPv6)  ← new in v3.0
+sub2ip subdomains.txt -s 2001:4860:4860::8888 -o results.txt
 
-# Combine with threads and record type
-sub2ip domains.txt -s 8.8.8.8 -r AAAA -t 8 -o ipv6_results.txt
+# FQDN resolver  ← new in v3.0
+sub2ip subdomains.txt -s resolver.example.com -o results.txt
 ```
 
-#### Advanced Examples
+#### Retry & Timeout Control *(new in v3.0)*
 
 ```bash
-# Full-featured command: 8 threads, CNAME records, Cloudflare DNS, verbose output
-sub2ip domains.txt -t 8 -r CNAME -s 1.1.1.1 -o cnames.txt -v
+# 3 retries, 10s timeout per query
+sub2ip subdomains.txt --retries 3 --timeout 10 -o results.txt
 
-# Verbose mode for troubleshooting
-sub2ip problem_domains.txt -v
-
-# Chain with other tools
-cat subfinder_output.txt | sort -u | sub2ip /dev/stdin -t 12 -o final_ips.txt
+# Strict: no retries, 2s timeout
+sub2ip subdomains.txt --retries 0 --timeout 2 -o fast.txt
 ```
+
+#### Output Formats *(new in v3.0)*
+
+```bash
+# CSV output (header + quoted fields)
+sub2ip domains.txt -f csv -o records.csv
+
+# JSON-Lines output (one object per resolved value)
+sub2ip domains.txt -f json -o records.jsonl
+
+# Pipe JSON into jq
+sub2ip domains.txt -f json | jq '.value'
+```
+
+#### Rate Limiting *(new in v3.0)*
+
+```bash
+# 200ms between queries per thread (respectful scanning)
+sub2ip domains.txt -t 8 --rate-limit 200 -o results.txt
+```
+
+#### Advanced / Pipeline Examples
+
+```bash
+# Full-featured: 20 threads, CNAME, Cloudflare DNS, retries, JSON output
+sub2ip domains.txt -t 20 -r CNAME -s 1.1.1.1 --retries 3 -f json -o cnames.jsonl
+
+# Skip wildcard check for speed on trusted input
+sub2ip domains.txt --no-wildcard -t 30 -o results.txt
+
+# Suppress colour for CI logs
+sub2ip domains.txt --no-color -o results.txt 2>&1 | tee scan.log
+
+# Chain with subfinder → sub2ip → httpx
+subfinder -d example.com | sort -u > subdomains.txt
+sub2ip subdomains.txt -t 20 -s 8.8.8.8 -o resolved_ips.txt
+httpx -l resolved_ips.txt -o http_results.txt
+
+# Pipe directly from subfinder
+subfinder -d example.com | sort -u | sub2ip /dev/stdin -t 16 -o final_ips.txt
+```
+
+---
+
 ### Output Structure
 
-Depending on your execution mode and record type, the output will vary:
-
-#### Console Output (Real-time)
+#### Console Output (plain, stdout)
 
 ```text
-=====================================
-     sub2ip Installation Script     
-=====================================
+[*] Input file  : subdomains.txt  (500 lines)
+[*] DNS tool    : dig
+[*] Record type : A
+[*] Threads     : 10
+[!] Wildcard DNS detected on example.com — results may include false positives.
 
-[+] Starting sub2ip resolution engine
-[*] Input file: subdomains.txt
-[*] Record type: A
-[*] Threads: 4
-[*] DNS Server: 8.8.8.8
+example.com          -> 93.184.216.34
+sub.example.com      -> 93.184.216.35
+api.example.com      -> 93.184.216.36
 
-[✓] example.com -> 93.184.216.34
-[✓] sub.example.com -> 93.184.216.35
-[✓] api.example.com -> 93.184.216.36
-
-[+] Done! Resolution complete!
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ Resolution Summary
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Total processed:     500
+  Resolved:            412
+  Failed/NXDOMAIN:     81
+  Skipped (invalid):   7
+  Elapsed:             43s
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-#### File Output (A Records - IPv4)
+#### File Output — plain
 
 ```text
-# resolved_ips.txt
-93.184.216.34
-93.184.216.35
-93.184.216.36
+# sub2ip v3.0 — generated 2026-05-07 09:00:00 UTC
+# Input: subdomains.txt | Type: A | Resolver: 8.8.8.8
+# Format: subdomain|value
+example.com|93.184.216.34
+sub.example.com|93.184.216.35
+api.example.com|93.184.216.36
 ```
 
-#### File Output (CNAME Records)
+#### File Output — csv (`-f csv`)
+
+```csv
+"subdomain","value"
+"example.com","93.184.216.34"
+"sub.example.com","93.184.216.35"
+"api.example.com","93.184.216.36"
+```
+
+#### File Output — json (`-f json`)
+
+```jsonl
+{"subdomain":"example.com","type":"A","value":"93.184.216.34","ts":"2026-05-07T09:00:00Z"}
+{"subdomain":"sub.example.com","type":"A","value":"93.184.216.35","ts":"2026-05-07T09:00:01Z"}
+{"subdomain":"api.example.com","type":"A","value":"93.184.216.36","ts":"2026-05-07T09:00:01Z"}
+```
+
+#### Verbose Output (`-v`)
 
 ```text
-# cnames.txt
-example.com.
-sub.example.com.
-api.example.com.
+[DBG] Querying example.com [A]
+[DBG] Querying sub.example.com [A]
+[DBG] Retry 1/2 for flaky.example.com (backoff 1s)
+[DBG] Querying api.example.com [A]
+[DBG] No A records: nxdomain.example.com
 ```
 
-#### File Output (MX Records)
-
-```text
-# mail_servers.txt
-mail1.example.com.
-mail2.example.com.
-```
-
-#### Verbose Output (with -v flag)
-
-```text
-[+] Starting sub2ip resolution engine
-[*] Input file: domains.txt
-[*] Record type: A
-[*] Threads: 8
-[*] DNS Server: 1.1.1.1
-
-[*] Querying: example.com
-[*] Querying: sub.example.com
-[*] Querying: api.example.com
-[✓] example.com -> 93.184.216.34
-[✓] sub.example.com -> 93.184.216.35
-[✓] api.example.com -> 93.184.216.36
-
-[+] Done! 3 results saved to: results.txt
-```
-
-> [!TIP]
-> **Resolution Tip:**
->
-> - Feed this tool with massive lists of subdomains harvested from tools like `subfinder`, `gau`, or `assetfinder`.
-> - Always verify that `host` is installed and functional on your system before beginning resolution.
-> - Utilize the output IP list with subsequent scanning tools like `httpx` or `nmap` for continued reconnaissance.
-> - For **v2.0**, use multi-threading (`-t` flag) to dramatically improve performance on large lists.
-> - Use custom DNS resolvers (`-s` flag) to bypass filtering or test resolver behavior.
-> - Combine with record type filtering (`-r` flag) to gather CNAME records, mail servers, etc.
->
-> **Example Pipeline:**
-> ```bash
-> subfinder -d example.com | sort -u > subdomains.txt
-> sub2ip subdomains.txt -t 8 -s 8.8.8.8 -o resolved_ips.txt
-> httpx -l resolved_ips.txt -o http_results.txt
-> ```
+---
 
 ### TO-DO
 
-- [x] Add support for multi-threading (background processing) to increase speed.
-  - ✓ Implemented parallel processing with GNU Parallel/xargs
-  - ✓ Configurable thread count (1-16)
-  - ✓ ~10x faster for large lists
+- [x] Multi-threading with GNU Parallel / bash background jobs
+  - ✓ True fd-based semaphore (v3.0) — up to 64 threads
+  - ✓ ~10× faster for large lists vs v1.0
 
-- [x] Implement filtration support for specific record types (e.g., CNAME, AAAA).
-  - ✓ Support for A, AAAA, CNAME, MX, NS, TXT, SOA, ANY
-  - ✓ Intelligent result filtering per record type
-  - ✓ Examples: `sub2ip domains.txt -r AAAA`, `sub2ip domains.txt -r CNAME`
+- [x] DNS record type filtering (A, AAAA, CNAME, MX, NS, TXT, SOA, ANY)
+  - ✓ Clean per-type parsing for both `dig` and `host`
+  - ✓ Result deduplication per subdomain
 
-- [x] Integrate support for multiple DNS resolvers.
-  - ✓ Custom DNS server support via `-s` / `--server` flag
-  - ✓ Tested with Google, Cloudflare, Quad9, and others
-  - ✓ Examples: `sub2ip domains.txt -s 8.8.8.8`, `sub2ip domains.txt -s 1.1.1.1`
+- [x] Custom DNS resolver support
+  - ✓ IPv4, IPv6, and FQDN resolver addresses (v3.0)
+  - ✓ Tested with Google, Cloudflare, Quad9
+
+- [x] Output format options — JSON, CSV *(v3.0)*
+  - ✓ `plain`, `csv`, `json` (JSON-Lines) via `--format`
+
+- [x] Rate limiting to respect DNS server load *(v3.0)*
+  - ✓ `--rate-limit MS` per thread
+
+- [x] Retry logic on transient failures *(v3.0)*
+  - ✓ `--retries N` with exponential backoff
+
+- [x] Wildcard DNS detection *(v3.0)*
+  - ✓ Pre-scan probe per apex domain; warn on wildcard zones
 
 ### Future Enhancements
 
-- [ ] Output format options (JSON, CSV, XML)
-- [ ] Rate limiting to respect DNS server load
-- [ ] Caching mechanism to prevent duplicate queries
-- [ ] Integration with subfinder, gau, assetfinder
-- [ ] Distributed processing across multiple machines
 - [ ] Real-time progress bar for large batches
-- [ ] Batch verification (ping/http check) on resolved IPs
-
+- [ ] Query result caching to skip duplicate apex lookups
+- [ ] Distributed processing across multiple machines
+- [ ] Integration wrappers for subfinder, gau, assetfinder
+- [ ] Batch HTTP/ping verification on resolved IPs
+- [ ] XML output format
+- [ ] Config file support (`~/.sub2iprc`)
